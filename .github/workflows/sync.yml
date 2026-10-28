@@ -1,0 +1,86 @@
+name: Octopia content sync
+
+on:
+  schedule:
+    # Every hour. Only changed products are sent; products refused with QuotaExceeded
+    # are retried on the next run, so a large catalogue trickles through over a few hours.
+    - cron: "23 * * * *"
+  workflow_dispatch:
+    inputs:
+      args:
+        description: "Extra arguments, e.g. --dry-run, --all, --status or --ean 8721082977739"
+        required: false
+        default: ""
+
+permissions:
+  contents: write  # push the updated state.json back to main
+
+concurrency:
+  group: octopia-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Check secrets
+        id: secrets
+        env:
+          OCTOPIA_CLIENT_ID: ${{ secrets.OCTOPIA_CLIENT_ID }}
+          CHANNABLE_EXPORT_URL: ${{ secrets.CHANNABLE_EXPORT_URL }}
+        run: |
+          if [ -z "$OCTOPIA_CLIENT_ID" ] || [ -z "$CHANNABLE_EXPORT_URL" ]; then
+            echo "::warning::Secrets not set yet (OCTOPIA_CLIENT_ID / CHANNABLE_EXPORT_URL) - skipping sync"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run sync
+        if: steps.secrets.outputs.ready == 'true'
+        env:
+          OCTOPIA_CLIENT_ID:     ${{ secrets.OCTOPIA_CLIENT_ID }}
+          OCTOPIA_CLIENT_SECRET: ${{ secrets.OCTOPIA_CLIENT_SECRET }}
+          OCTOPIA_SELLER_ID:     ${{ secrets.OCTOPIA_SELLER_ID }}
+          CHANNABLE_EXPORT_URL:  ${{ secrets.CHANNABLE_EXPORT_URL }}
+          ARGS: ${{ inputs.args }}
+        # ARGS is passed through the environment, never interpolated into the script.
+        run: python sync.py $ARGS
+
+      - name: Commit state.json if changed
+        if: always() && steps.secrets.outputs.ready == 'true'
+        run: |
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name  "github-actions[bot]"
+          if git diff --quiet state.json; then
+            echo "No state.json changes"
+          else
+            git add state.json
+            git commit -m "Update sync state $(date -u +%Y-%m-%dT%H:%MZ)"
+            git push
+          fi
+
+      - name: Upload run log
+        if: always() && steps.secrets.outputs.ready == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sync-log-${{ github.run_id }}
+          path: logs/
+          if-no-files-found: ignore
+          retention-days: 30
