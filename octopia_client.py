@@ -98,7 +98,8 @@ class OctopiaClient:
             if not nxt:
                 return
             if not nxt.startswith("http"):
-                nxt = BASE_URL + nxt
+                # /products links start with "/", /offers links don't ("offers?Cursor=…").
+                nxt = BASE_URL + ("" if nxt.startswith("/") else "/") + nxt
             r = self._request("GET", nxt)
 
     # ── endpoints ───────────────────────────────────────────────────────────
