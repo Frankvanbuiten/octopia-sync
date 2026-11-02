@@ -14,6 +14,7 @@ Usage:
   py sync.py --all                     # resend everything
   py sync.py --check-permissions       # rights, category and mandatory attributes, send nothing
   py sync.py --list-attributes         # all attributes of Voldt's categories → attributes.csv
+  py sync.py --ean X --refresh-pictures  # make Octopia download X's pictures again
 
 Exit codes: 0 ok (QuotaExceeded products are retried next run), 1 refused or locally
 invalid products, 2 fatal error.
@@ -62,6 +63,19 @@ def now_iso() -> str:
 def payload_hash(product: dict) -> str:
     blob = json.dumps(product, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def with_refreshed_pictures(product: dict, stamp: str) -> dict:
+    """Copy of product whose picture URLs carry refresh=<stamp>.
+
+    Octopia treats a resubmission with the same picture URLs as Identical and does not
+    download them again (e.g. after a DownloadTechnicalError). A new query parameter
+    forces a fresh download; Shopify's CDN ignores it. The state hash is still taken
+    from the unmodified product, so normal runs don't resend it afterwards.
+    """
+    pics = [{**x, "url": f"{x['url']}{'&' if '?' in x['url'] else '?'}refresh={stamp}"}
+            for x in product.get("sellerPictureUrls", [])]
+    return {**product, "sellerPictureUrls": pics} if pics else product
 
 
 def load_state(path: Path) -> dict:
@@ -358,7 +372,15 @@ def main(argv: list[str] | None = None) -> int:
                          "(needs no Channable export)")
     ap.add_argument("--status", action="store_true",
                     help="fetch reports for products still open from earlier runs, then exit")
+    ap.add_argument("--refresh-pictures", action="store_true",
+                    help="make Octopia download the pictures again (use with --ean or --all)")
     args = ap.parse_args(argv)
+    if args.refresh_pictures and not (args.ean or args.all):
+        # Every product with new picture URLs goes through moderation again: never by accident.
+        print("--refresh-pictures needs --ean or --all", file=sys.stderr)
+        return 2
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
+    outgoing = (lambda p: with_refreshed_pictures(p, stamp)) if args.refresh_pictures else (lambda p: p)
 
     load_env(HERE / ".env")
     batch_size = int(os.environ.get("BATCH_SIZE", "50"))
@@ -458,7 +480,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"{len(valid)} valid, {invalid} invalid, {len(to_send)} to send")
 
     if args.dry_run:
-        print(json.dumps({"products": to_send}, indent=2, ensure_ascii=False))
+        print(json.dumps({"products": [outgoing(p) for p in to_send]}, indent=2, ensure_ascii=False))
         return 1 if invalid else 0
     if not to_send:
         log.close()
@@ -479,7 +501,7 @@ def main(argv: list[str] | None = None) -> int:
         batch = sendable[i:i + batch_size]
         if i:
             time.sleep(BATCH_PAUSE)
-        package_id = client.submit_products(batch)
+        package_id = client.submit_products([outgoing(p) for p in batch])
         packages[package_id] = [p["gtin"] for p in batch]
         print(f"  submitted {len(batch)} products → package {package_id}")
         for p in batch:

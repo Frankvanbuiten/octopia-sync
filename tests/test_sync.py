@@ -340,6 +340,23 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(self.run_sync(None, "--dry-run", "--ean", "8720589000017"), 0)
         self.assertFalse(self.state.exists())
 
+    def test_refresh_pictures_changes_urls_but_not_state_hash(self):
+        client = FakeClient()
+        self.assertEqual(self.run_sync(client, "--ean", "8720589000017"), 0)
+        hash_before = json.loads(self.state.read_text(encoding="utf-8"))["8720589000017"]["hash"]
+        self.assertEqual(self.run_sync(client, "--ean", "8720589000017", "--refresh-pictures"), 0)
+        urls = [x["url"] for x in client.submitted[1][0]["sellerPictureUrls"]]
+        self.assertTrue(all("refresh=" in u and "width=2000" in u for u in urls), urls)
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertEqual(state["8720589000017"]["hash"], hash_before)
+        self.run_sync(client)  # a normal run afterwards sends nothing
+        self.assertEqual(len(client.submitted), 2)
+
+    def test_refresh_pictures_needs_selection(self):
+        client = FakeClient()
+        self.assertEqual(self.run_sync(client, "--refresh-pictures"), 2)
+        self.assertEqual(client.submitted, [])
+
     def test_missing_mandatory_attribute_blocks_send(self):
         self.src.write_text(CSV.replace(";22 kW;", ";;"), encoding="utf-8")
         client = FakeClient()

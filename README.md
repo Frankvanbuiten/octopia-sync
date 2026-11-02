@@ -40,6 +40,7 @@ py sync.py                          # send only products that changed since the 
 py sync.py --all                    # resend everything
 py sync.py --no-wait                # submit without waiting for the reports
 py sync.py --status                 # fetch results for products still open from earlier runs; sends nothing
+py sync.py --ean 8721008666693 --refresh-pictures   # make Octopia download the pictures again
 ```
 
 `--source <url|file>` overrides `CHANNABLE_EXPORT_URL`. `--dry-run` also works without Octopia credentials, but then the category checks are skipped.
@@ -75,6 +76,8 @@ py sync.py --status                 # fetch results for products still open from
 8. Writes the result to `state.json` and to `logs/run-*.jsonl`. Each log line holds the timestamp, EAN, status, operationType, packageId, errors and warnings.
 
 A product refused for its content keeps its hash, so it is only resent once its row in the export changes. A product refused with `QuotaExceeded` is different: Octopia's submission quota is undocumented, and in practice about 50 products went through before it started refusing. Such a product gets the status `QuotaExceeded` and is resent unchanged by the next run, so for a large catalogue you simply run `py sync.py` again later. Use `--ean` to force a resend. `Integrated` means Octopia accepted the content. Cdiscount moderation still follows, and the Seller Zone can lag by hours up to a day.
+
+**Re-downloading pictures:** if Octopia receives the same picture URLs again, it reports the product as `Identical` and does not download the pictures again, for example after a `DownloadTechnicalError`. `--refresh-pictures` adds `refresh=<timestamp>` to the URLs for this run only; Shopify's CDN ignores it. It only works together with `--ean` or `--all`, because every product sent this way goes through moderation again.
 
 Exit codes: `0` OK (products refused with `QuotaExceeded` count as OK, because the next run retries them), `1` refused for content or locally invalid products, `2` fatal error such as missing configuration or an API error.
 
